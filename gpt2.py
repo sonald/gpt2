@@ -21,6 +21,7 @@ import math
 import json
 from transformers import AutoTokenizer
 from typing import List, Optional, Tuple
+import einops
 
 
 seed = 42
@@ -81,16 +82,15 @@ class MultiHeadAttention(nn.Module):
         # this is '.attn.bias' in state_dict
 
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        self.flash = False
-        if not self.flash:
-            sz = config['n_ctx']
-            self.register_buffer('bias', torch.tril(torch.ones(sz, sz))[None, None, :, :]) # [1, 1, sz, sz]
+        # self.flash = False
+        sz = config['n_ctx']
+        self.register_buffer('bias', torch.tril(torch.ones(sz, sz))[None, None, :, :]) # [1, 1, sz, sz]
 
     def attention(self, q, k, v, mask=None):
         kv_seqlen = k.shape[-2]
         q_seqlen = q.shape[-2]
-        # print(f"{kv_seqlen=}, {q_seqlen=}")
-        attn = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.shape[-1]))
+        attn = einops.einsum(q, k, 'b h q d, b h k d -> b h q k') * (1.0 / math.sqrt(k.shape[-1]))
+        # attn = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.shape[-1]))
         attn = attn.masked_fill(self.bias[:, :, kv_seqlen-q_seqlen:kv_seqlen, :kv_seqlen] == 0, float('-inf'))
         attn = softmax(attn)
         attn = self.attn_pdrop(attn)
@@ -116,18 +116,20 @@ class MultiHeadAttention(nn.Module):
         if use_cache:
             past_key_values = (k, v)
 
-        # print(f"MHA: {q.shape=} {k.shape=} {v.shape=}")
         if self.flash:
-            y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, 
+            ks = k.shape[-2]
+            qs = q.shape[-2]
+            attn_mask = self.bias[:, :, ks-qs:ks, :ks] == 1 # sdpa needs bool mask 
+            y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, 
                     dropout_p=self.config['attn_pdrop'] if self.training else 0,
-                    is_causal=True)
+                    is_causal=False)
         else:
             y = self.attention(q, k, v) # B, nh, S, C//nh
 
-        y = y.transpose(1, 2).contiguous().view(B, S, C)
+        # y = y.transpose(1, 2).contiguous().view(B, S, C)
+        y = einops.rearrange(y, 'b h s c -> b s (h c)')
 
         y = self.resid_pdrop(self.c_proj(y))
-        # print(f"MHA: {y.shape=}")
         if use_cache:
             return y, past_key_values
         return (y,)
@@ -201,8 +203,6 @@ class GPT2(nn.Module):
 
         embd = self.wte(x) + self.wpe(torch.arange(past_length, T, dtype=torch.long).unsqueeze(0))
         hidden_states = self.embd_pdrop(embd)
-
-        # print(f"GPT2:{past_length=} {T=} {x.shape=} {hidden_states.shape=}")
 
         presents = ()
         for _, (decoder, kv_cache) in enumerate(zip(self.h, past_key_values)):

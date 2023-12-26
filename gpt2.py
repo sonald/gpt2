@@ -90,7 +90,6 @@ class MultiHeadAttention(nn.Module):
         kv_seqlen = k.shape[-2]
         q_seqlen = q.shape[-2]
         attn = einops.einsum(q, k, 'b h q d, b h k d -> b h q k') * (1.0 / math.sqrt(k.shape[-1]))
-        # attn = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.shape[-1]))
         attn = attn.masked_fill(self.bias[:, :, kv_seqlen-q_seqlen:kv_seqlen, :kv_seqlen] == 0, float('-inf'))
         attn = softmax(attn)
         attn = self.attn_pdrop(attn)
@@ -102,9 +101,9 @@ class MultiHeadAttention(nn.Module):
 
         # SDPA
         q, k, v = self.c_attn(x).split(C, dim=-1) #  (B, S, C)
-        q = q.view(B, S, nh, C//nh).transpose(1, 2) # (B, nh, S, C//nh)
-        k = k.view(B, S, nh, C//nh).transpose(1, 2) # (B, nh, S, C//nh)
-        v = v.view(B, S, nh, C//nh).transpose(1, 2) # (B, nh, S, C//nh)
+        q = einops.rearrange(q, 'b s (h d) -> b h s d', h=nh)
+        k = einops.rearrange(k, 'b s (h d) -> b h s d', h=nh)
+        v = einops.rearrange(v, 'b s (h d) -> b h s d', h=nh)
 
         if past_key_values is not None:
             assert use_cache
@@ -126,7 +125,6 @@ class MultiHeadAttention(nn.Module):
         else:
             y = self.attention(q, k, v) # B, nh, S, C//nh
 
-        # y = y.transpose(1, 2).contiguous().view(B, S, C)
         y = einops.rearrange(y, 'b h s c -> b s (h c)')
 
         y = self.resid_pdrop(self.c_proj(y))

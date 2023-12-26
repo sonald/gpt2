@@ -265,7 +265,7 @@ class GPT2(nn.Module):
         """
 
         candidates = torch.gather(logits, -1, input_ids)
-        candidates = torch.where(candidates > 0, candidates * repetition_penalty,
+        candidates = torch.where(candidates < 0, candidates * repetition_penalty,
                                   candidates / repetition_penalty)
 
         logits.scatter(-1, input_ids, candidates)

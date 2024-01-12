@@ -23,18 +23,17 @@ from transformers import AutoTokenizer
 from typing import List, Optional, Tuple
 import einops
 
-
 seed = 42
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import platform
+
 if platform.system() == 'Darwin':
     torch.set_default_device('mps')
 elif torch.cuda.is_available():
     torch.set_default_device('cuda')
-
 
 
 class MLP(nn.Module):
@@ -61,9 +60,10 @@ class LayerNorm(nn.Module):
         mean = x.mean(dim=-1, keepdim=True)
         var = x.var(dim=-1, keepdim=True)
 
-        x = (x - mean) / torch.sqrt(var + self.epsilon) 
+        x = (x - mean) / torch.sqrt(var + self.epsilon)
         x = self.weight * x + self.bias
         return x
+
 
 # https://jaykmody.com/blog/stable-softmax/
 def softmax(x: torch.Tensor):
@@ -71,11 +71,12 @@ def softmax(x: torch.Tensor):
     exp_x = torch.exp(x - torch.max(x, dim=-1, keepdim=True)[0])
     return exp_x / exp_x.sum(dim=-1, keepdim=True)
 
+
 class MultiHeadAttention(nn.Module):
     def __init__(self, config) -> None:
         super().__init__()
         self.config = config
-        self.c_attn = nn.Linear(config['n_embd'], config['n_embd']*3)
+        self.c_attn = nn.Linear(config['n_embd'], config['n_embd'] * 3)
         self.c_proj = nn.Linear(config['n_embd'], config['n_embd'])
         self.attn_pdrop = nn.Dropout(config['attn_pdrop'])
         self.resid_pdrop = nn.Dropout(config['resid_pdrop'])
@@ -84,13 +85,13 @@ class MultiHeadAttention(nn.Module):
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         # self.flash = False
         sz = config['n_ctx']
-        self.register_buffer('bias', torch.tril(torch.ones(sz, sz))[None, None, :, :]) # [1, 1, sz, sz]
+        self.register_buffer('bias', torch.tril(torch.ones(sz, sz))[None, None, :, :])  # [1, 1, sz, sz]
 
     def attention(self, q, k, v, mask=None):
         kv_seqlen = k.shape[-2]
         q_seqlen = q.shape[-2]
         attn = einops.einsum(q, k, 'b h q d, b h k d -> b h q k') * (1.0 / math.sqrt(k.shape[-1]))
-        attn = attn.masked_fill(self.bias[:, :, kv_seqlen-q_seqlen:kv_seqlen, :kv_seqlen] == 0, float('-inf'))
+        attn = attn.masked_fill(self.bias[:, :, kv_seqlen - q_seqlen:kv_seqlen, :kv_seqlen] == 0, float('-inf'))
         attn = softmax(attn)
         attn = self.attn_pdrop(attn)
         return attn @ v
@@ -100,7 +101,7 @@ class MultiHeadAttention(nn.Module):
         nh = self.config['n_head']
 
         # SDPA
-        q, k, v = self.c_attn(x).split(C, dim=-1) #  (B, S, C)
+        q, k, v = self.c_attn(x).split(C, dim=-1)  # (B, S, C)
         q = einops.rearrange(q, 'b s (h d) -> b h s d', h=nh)
         k = einops.rearrange(k, 'b s (h d) -> b h s d', h=nh)
         v = einops.rearrange(v, 'b s (h d) -> b h s d', h=nh)
@@ -110,7 +111,7 @@ class MultiHeadAttention(nn.Module):
             prev_k, prev_v = past_key_values
             assert k.size(-2) == 1
             k = torch.cat((prev_k, k), dim=-2)
-            v = torch.cat((prev_v, v), dim=-2) 
+            v = torch.cat((prev_v, v), dim=-2)
 
         if use_cache:
             past_key_values = (k, v)
@@ -118,12 +119,12 @@ class MultiHeadAttention(nn.Module):
         if self.flash:
             ks = k.shape[-2]
             qs = q.shape[-2]
-            attn_mask = self.bias[:, :, ks-qs:ks, :ks] == 1 # sdpa needs bool mask 
-            y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, 
-                    dropout_p=self.config['attn_pdrop'] if self.training else 0,
-                    is_causal=False)
+            attn_mask = self.bias[:, :, ks - qs:ks, :ks] == 1  # sdpa needs bool mask
+            y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask,
+                                               dropout_p=self.config['attn_pdrop'] if self.training else 0,
+                                               is_causal=False)
         else:
-            y = self.attention(q, k, v) # B, nh, S, C//nh
+            y = self.attention(q, k, v)  # B, nh, S, C//nh
 
         y = einops.rearrange(y, 'b h s c -> b s (h c)')
 
@@ -131,7 +132,7 @@ class MultiHeadAttention(nn.Module):
         if use_cache:
             return y, past_key_values
         return (y,)
-        
+
 
 class TransformerBlock(nn.Module):
     def __init__(self, config) -> None:
@@ -148,9 +149,10 @@ class TransformerBlock(nn.Module):
         # post-norm
         x = x + self.mlp(self.ln_2(x))
         if use_cache:
-            return x, outputs[1] # x, cache
+            return x, outputs[1]  # x, cache
         else:
             return (x,)
+
 
 # from GPT2:
 # Layer normalization (Ba et al., 2016) was moved to the input of each sub-block, similar to a
@@ -183,19 +185,19 @@ class GPT2(nn.Module):
         # see comments above
         for nm, p in self.named_parameters():
             if nm.endswith('c_proj.weight'):
-                std = self.initializer_range/math.sqrt(2 * config['n_layer'])
+                std = self.initializer_range / math.sqrt(2 * config['n_layer'])
                 torch.nn.init.normal_(p, mean=0.0, std=std)
 
-    def forward(self, x, past_key_values: Optional[Tuple[Tuple[torch.Tensor]]]=None, use_cache=False):
+    def forward(self, x, past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None, use_cache=False):
         T = x.shape[1]
         assert T <= self.config['n_positions'], "Cannot forward, model block size is exhausted."
 
         past_length = 0
         if use_cache:
             if past_key_values[0] is not None:
-                assert isinstance(past_key_values, tuple)  \
-                    and isinstance(past_key_values[0], tuple) \
-                    and len(past_key_values[0][0]) == 2
+                assert isinstance(past_key_values, tuple) \
+                       and isinstance(past_key_values[0], tuple) \
+                       and len(past_key_values[0][0]) == 2
                 past_length = past_key_values[0][0].shape[-2]
                 T += past_length
 
@@ -231,8 +233,8 @@ class GPT2(nn.Module):
         model.eval()
         sd = model.state_dict()
         sd_keys = sd.keys()
-        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')] # discard this mask / buffer, not a param
-        sd_keys = [k for k in sd_keys if not k.endswith('lm_head.weight')] 
+        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')]  # discard this mask / buffer, not a param
+        sd_keys = [k for k in sd_keys if not k.endswith('lm_head.weight')]
 
         weights = torch.load(os.path.join(model_dir, 'pytorch_model.bin'))
         # these weights need to be transposed , original GPT2 uses conv1d
@@ -256,7 +258,7 @@ class GPT2(nn.Module):
         return model
 
     def handle_repetition_penalty(self, input_ids: torch.Tensor, logits: torch.Tensor,
-                                   repetition_penalty: float = 1.0) -> torch.Tensor:
+                                  repetition_penalty: float = 1.0) -> torch.Tensor:
         """
         If `repetition_penalty` is set to a non-zero `float`, then there are additional
         logic for calculating the probability of generating a repeated token.
@@ -264,15 +266,14 @@ class GPT2(nn.Module):
 
         candidates = torch.gather(logits, -1, input_ids)
         candidates = torch.where(candidates < 0, candidates * repetition_penalty,
-                                  candidates / repetition_penalty)
+                                 candidates / repetition_penalty)
 
         logits.scatter(-1, input_ids, candidates)
         return logits
 
-
     @torch.no_grad()
-    def generate(self, input_ids, do_sample=False, temperature = 1.0, top_k=None,
-                  top_p = 0.95, max_new_tokens=10, repetition_penalty=1.0, use_cache=False):
+    def generate(self, input_ids, do_sample=False, temperature=1.0, top_k=None,
+                 top_p=0.95, max_new_tokens=10, repetition_penalty=1.0, use_cache=False):
 
         past_key_values = tuple([None] * self.config['n_layer'])
 
@@ -282,7 +283,7 @@ class GPT2(nn.Module):
             if past_key_values[0] is not None:
                 idx = idx[:, -1:]
 
-            outputs = self(idx, past_key_values=past_key_values, use_cache=use_cache) # (B, S, V)
+            outputs = self(idx, past_key_values=past_key_values, use_cache=use_cache)  # (B, S, V)
             logits = outputs[0]
             if use_cache:
                 past_key_values = outputs[1]
@@ -295,7 +296,7 @@ class GPT2(nn.Module):
                 v, _ = torch.topk(logits, min(top_k, logits.shape[-1]))
                 logits[logits < v[:, [-1]]] = float('-inf')
 
-            probs = torch.nn.functional.softmax(logits, dim=-1) # (B, V)
+            probs = torch.nn.functional.softmax(logits, dim=-1)  # (B, V)
             if do_sample:
                 if top_p is not None:
                     sorted, indices = torch.sort(probs, dim=1, descending=True)
@@ -320,8 +321,9 @@ class GPT2(nn.Module):
 
         return input_ids
 
+
 def predict(model, tokenizer, prompt: List[str], max_new_tokens=10, do_sample=False,
-             top_p=None, top_k=None, repetition_penalty=1.0, use_cache=False):
+            top_p=None, top_k=None, repetition_penalty=1.0, use_cache=False):
     inputs = tokenizer(prompt, padding=True, return_tensors="pt")
     output = model.generate(inputs['input_ids'], do_sample=do_sample, top_k=top_k,
                             repetition_penalty=repetition_penalty, use_cache=use_cache,

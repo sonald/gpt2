@@ -8,9 +8,7 @@ import torch
 import math
 import json
 import os
-
-
-model_path = '/data/sonald/ai_models/model_weights/Llama-2-7b-hf'
+import argparse
 
 
 class LlamaRMSNorm(nn.Module):
@@ -21,6 +19,7 @@ class LlamaRMSNorm(nn.Module):
 
     def forward(self, x: torch.Tensor):
         dtype = x.dtype
+        # convert to float32 for numerical stability
         x = x.to(torch.float32)
         var = x.pow(2).mean(dim=-1, keepdim=True) + self.rms_norm_eps
         x = x * torch.rsqrt(var)
@@ -92,6 +91,9 @@ class LlamaMultiHeadAttention(nn.Module):
         self.rotary_emb = LlamaRotaryEmbedding(config)
         self.num_heads = config['num_attention_heads']
 
+        self.flash = hasattr(F, 'scaled_dot_product_attention')
+        self.flash = False  # FIXME: flash is not working, it produce different results, why?
+
         D = config['max_position_embeddings']
         self.register_buffer('bias', torch.tril(torch.ones(D, D))[
                              None, None, :, :], persistent=False)
@@ -120,17 +122,20 @@ class LlamaMultiHeadAttention(nn.Module):
         k = k * cos + self.rotate_half(k) * sin
 
         q_seq_len, kv_seq_len = q.shape[-2], v.shape[-2]
-        # SDPA is the same
-        # attn_mask = self.bias[:, :, :q_seq_len,
-        #                       :kv_seq_len] == 1  # sdpa needs bool mask
-        # attn = F.scaled_dot_product_attention(
-        #     q, k, v, is_causal=True, dropout_p=0.0, attn_mask=attn_mask)
-        scores = einsum(q, k, 'b h q d, b h k d -> b h q k') / \
-            math.sqrt(q.shape[-1])
-        scores = scores.masked_fill(
-            self.bias[:, :, :q_seq_len, :kv_seq_len] == 0, float('-inf'))
-        attn = F.softmax(scores, dim=-1, dtype=torch.float32).to(v.dtype)
-        attn = attn @ v
+
+        if self.flash:
+            # SDPA is the same
+            attn_mask = self.bias[:, :, :q_seq_len,
+                                  :kv_seq_len] == 1  # sdpa needs bool mask
+            attn = F.scaled_dot_product_attention(
+                q, k, v, is_causal=False, dropout_p=0.0, attn_mask=attn_mask)
+        else:
+            scores = einsum(q, k, 'b h q d, b h k d -> b h q k') / \
+                math.sqrt(q.shape[-1])
+            scores = scores.masked_fill(
+                self.bias[:, :, :q_seq_len, :kv_seq_len] == 0, float('-inf'))
+            attn = F.softmax(scores, dim=-1, dtype=torch.float32).to(v.dtype)
+            attn = attn @ v
 
         attn = rearrange(attn, 'b h s d -> b s (h d)')
         hidden_states = self.o_proj(attn)
@@ -214,10 +219,19 @@ class Llama2ForCausalLM(nn.Module):
         from tqdm import tqdm
         inited = set()
         print('loading state dict...')
-        files = ['/pytorch_model-00001-of-00002.bin',
-                 '/pytorch_model-00002-of-00002.bin']
+
+        if os.path.exists(os.path.join(model_path, 'pytorch_model.bin')):
+            files = ['pytorch_model.bin']
+        elif os.path.exists(os.path.join(model_path, 'pytorch_model.bin.index.json')):
+            with open(os.path.join(model_path, 'pytorch_model.bin.index.json'), mode='r') as f:
+                index = json.load(f)
+                files = list(set(index['weight_map'][k]
+                             for k in index['weight_map']))
+        else:
+            raise Exception('unknown model file format')
+
         for shard in files:
-            bin_sd = torch.load(model_path + shard)
+            bin_sd = torch.load(os.path.join(model_path, shard))
             for key in tqdm(bin_sd.keys(), desc=shard):
                 if key in sd_keys:
                     with torch.no_grad():
@@ -261,6 +275,13 @@ def predict2(model, tokenizer, prompt, max_new_tokens=100):
 
 
 if __name__ == "__main__":
+    default_model_path = '/data/sonald/ai_models/model_weights/Llama-2-7b-chat-hf'
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-m', '--model_path', type=str,
+                        default=default_model_path)
+    args = parser.parse_args()
+
+    model_path = args.model_path
     model = Llama2ForCausalLM.from_pretrained(model_path).to('cuda')
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     tokenizer.pad_token_id = 0

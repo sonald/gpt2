@@ -1,18 +1,19 @@
 # Write GPT2 by hand
 #
-# links: 
+# links:
 # - [Attention is all you need](https://arxiv.org/pdf/1706.03762.pdf)
 # - [GPT2](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
 # - [Layer Norm](https://nn.labml.ai/normalization/layer_norm/index.html)
-# 
+#
 # Self-attention:
-# 
+#
 # $ \text{attention}(Q, K, V) = \text{softmax}(\frac{QK^T}{\sqrt{d_k}})V $
-# 
+#
 # safe softmax ([stable softmax](https://jaykmody.com/blog/stable-softmax/)):
-# 
+#
 # $ \text{softmax}(X) = \frac{e^{x_i-x.max()}} {\sum_{j=0}^n e^{x_j-x.max()}} $
 
+import platform
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -28,7 +29,6 @@ torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
-import platform
 
 if platform.system() == 'Darwin':
     torch.set_default_device('mps')
@@ -82,16 +82,20 @@ class MultiHeadAttention(nn.Module):
         self.resid_pdrop = nn.Dropout(config['resid_pdrop'])
         # this is '.attn.bias' in state_dict
 
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        self.flash = hasattr(torch.nn.functional,
+                             'scaled_dot_product_attention')
         # self.flash = False
         sz = config['n_ctx']
-        self.register_buffer('bias', torch.tril(torch.ones(sz, sz))[None, None, :, :])  # [1, 1, sz, sz]
+        self.register_buffer('bias', torch.tril(torch.ones(sz, sz))[
+                             None, None, :, :])  # [1, 1, sz, sz]
 
     def attention(self, q, k, v, mask=None):
         kv_seqlen = k.shape[-2]
         q_seqlen = q.shape[-2]
-        attn = einops.einsum(q, k, 'b h q d, b h k d -> b h q k') * (1.0 / math.sqrt(k.shape[-1]))
-        attn = attn.masked_fill(self.bias[:, :, kv_seqlen - q_seqlen:kv_seqlen, :kv_seqlen] == 0, float('-inf'))
+        attn = einops.einsum(
+            q, k, 'b h q d, b h k d -> b h q k') * (1.0 / math.sqrt(k.shape[-1]))
+        attn = attn.masked_fill(
+            self.bias[:, :, kv_seqlen - q_seqlen:kv_seqlen, :kv_seqlen] == 0, float('-inf'))
         attn = softmax(attn)
         attn = self.attn_pdrop(attn)
         return attn @ v
@@ -119,7 +123,8 @@ class MultiHeadAttention(nn.Module):
         if self.flash:
             ks = k.shape[-2]
             qs = q.shape[-2]
-            attn_mask = self.bias[:, :, ks - qs:ks, :ks] == 1  # sdpa needs bool mask
+            attn_mask = self.bias[:, :, ks - qs:ks,
+                                  :ks] == 1  # sdpa needs bool mask
             y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask,
                                                dropout_p=self.config['attn_pdrop'] if self.training else 0,
                                                is_causal=False)
@@ -144,7 +149,8 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x, past_key_values=None, use_cache=False):
         # pre-norm
-        outputs = self.attn(self.ln_1(x), past_key_values=past_key_values, use_cache=use_cache)
+        outputs = self.attn(
+            self.ln_1(x), past_key_values=past_key_values, use_cache=use_cache)
         x = x + outputs[0]
         # post-norm
         x = x + self.mlp(self.ln_2(x))
@@ -159,7 +165,7 @@ class TransformerBlock(nn.Module):
 # pre-activation residual network (He et al., 2016) and an additional layer normalization was
 # added after the final selfattention block. A modified initialization which accounts
 # for the accumulation on the residual path with model depth
-# is used. We scale the weights of residual layers at initialization by a factor of 
+# is used. We scale the weights of residual layers at initialization by a factor of
 # 1/√N where N is the number of residual layers. The vocabulary is expanded to 50,257. We
 # also increase the context size from 512 to 1024 tokens and a larger batchsize of 512 is used
 
@@ -172,10 +178,12 @@ class GPT2(nn.Module):
         self.wpe = nn.Embedding(config['n_positions'], config['n_embd'])
         self.embd_pdrop = nn.Dropout(config['embd_pdrop'])
 
-        self.h = nn.ModuleList([TransformerBlock(config) for _ in range(config['n_layer'])])
+        self.h = nn.ModuleList([TransformerBlock(config)
+                               for _ in range(config['n_layer'])])
         self.ln_f = LayerNorm(config)
 
-        self.lm_head = nn.Linear(config['n_embd'], config['vocab_size'], bias=False)
+        self.lm_head = nn.Linear(
+            config['n_embd'], config['vocab_size'], bias=False)
 
         self.initializer_range = config['initializer_range']
 
@@ -196,17 +204,19 @@ class GPT2(nn.Module):
         if use_cache:
             if past_key_values[0] is not None:
                 assert isinstance(past_key_values, tuple) \
-                       and isinstance(past_key_values[0], tuple) \
-                       and len(past_key_values[0][0]) == 2
+                    and isinstance(past_key_values[0], tuple) \
+                    and len(past_key_values[0][0]) == 2
                 past_length = past_key_values[0][0].shape[-2]
                 T += past_length
 
-        embd = self.wte(x) + self.wpe(torch.arange(past_length, T, dtype=torch.long).unsqueeze(0))
+        embd = self.wte(x) + self.wpe(torch.arange(past_length,
+                                                   T, dtype=torch.long).unsqueeze(0))
         hidden_states = self.embd_pdrop(embd)
 
         presents = ()
         for _, (decoder, kv_cache) in enumerate(zip(self.h, past_key_values)):
-            outputs = decoder(hidden_states, past_key_values=kv_cache, use_cache=use_cache)
+            outputs = decoder(
+                hidden_states, past_key_values=kv_cache, use_cache=use_cache)
             hidden_states = outputs[0]
             if use_cache:
                 presents = presents + (outputs[1],)
@@ -221,9 +231,11 @@ class GPT2(nn.Module):
 
     def _init_weights(self, module: nn.Module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=self.initializer_range)
+            torch.nn.init.normal_(module.weight, mean=0.0,
+                                  std=self.initializer_range)
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=self.initializer_range)
+            torch.nn.init.normal_(module.weight, mean=0.0,
+                                  std=self.initializer_range)
 
     def from_pretrained(model_dir):
         with open(os.path.join(model_dir, 'config.json'), mode='r') as f:
@@ -233,23 +245,28 @@ class GPT2(nn.Module):
         model.eval()
         sd = model.state_dict()
         sd_keys = sd.keys()
-        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')]  # discard this mask / buffer, not a param
+        # discard this mask / buffer, not a param
+        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')]
         sd_keys = [k for k in sd_keys if not k.endswith('lm_head.weight')]
 
         weights = torch.load(os.path.join(model_dir, 'pytorch_model.bin'))
         # these weights need to be transposed , original GPT2 uses conv1d
-        transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
+        transposed = ['attn.c_attn.weight', 'attn.c_proj.weight',
+                      'mlp.c_fc.weight', 'mlp.c_proj.weight']
         # skip .attn.bias which is mask
         keys = [k for k in weights.keys() if '.attn.bias' not in k]
-        assert len(keys) == len(sd_keys), f"mismatched keys: {len(keys)} != {len(sd_keys)}"
+        assert len(keys) == len(
+            sd_keys), f"mismatched keys: {len(keys)} != {len(sd_keys)}"
         for k in keys:
             if any([k.endswith(n) for n in transposed]):
-                assert sd[k].shape == weights[k].shape[::-1], f"shape mismatch : {k} {sd[k].shape} {weights[k].shape}"
+                assert sd[k].shape == weights[k].shape[::-
+                                                       1], f"shape mismatch : {k} {sd[k].shape} {weights[k].shape}"
                 with torch.no_grad():
                     sd[k].copy_(weights[k].t())
 
             elif k in sd:
-                assert sd[k].shape == weights[k].shape, f"shape mismatch : {k} {sd[k].shape} {weights[k].shape}"
+                assert sd[k].shape == weights[
+                    k].shape, f"shape mismatch : {k} {sd[k].shape} {weights[k].shape}"
                 with torch.no_grad():
                     sd[k].copy_(weights[k])
 
@@ -279,38 +296,45 @@ class GPT2(nn.Module):
 
         maxpos = self.config['n_positions']
         for _ in range(max_new_tokens):
-            idx = input_ids if input_ids.size(1) <= maxpos else input_ids[:, -maxpos:]
+            idx = input_ids if input_ids.size(
+                1) <= maxpos else input_ids[:, -maxpos:]
             if past_key_values[0] is not None:
                 idx = idx[:, -1:]
 
-            outputs = self(idx, past_key_values=past_key_values, use_cache=use_cache)  # (B, S, V)
+            outputs = self(idx, past_key_values=past_key_values,
+                           use_cache=use_cache)  # (B, S, V)
             logits = outputs[0]
             if use_cache:
                 past_key_values = outputs[1]
 
             logits = logits[:, -1, :] / temperature
 
-            logits = self.handle_repetition_penalty(input_ids, logits, repetition_penalty)
+            logits = self.handle_repetition_penalty(
+                input_ids, logits, repetition_penalty)
 
-            if do_sample and top_k is not None:
+            if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.shape[-1]))
                 logits[logits < v[:, [-1]]] = float('-inf')
 
             probs = torch.nn.functional.softmax(logits, dim=-1)  # (B, V)
+
             if do_sample:
                 if top_p is not None:
                     sorted, indices = torch.sort(probs, dim=1, descending=True)
 
                     csum = torch.cumsum(sorted, dim=-1)
                     indices_to_remove = csum > top_p
-                    indices_to_remove[:, 1:] = indices_to_remove[:, :-1].clone()
+                    indices_to_remove[:,
+                                      1:] = indices_to_remove[:, :-1].clone()
                     indices_to_remove[:, 0] = False
 
                     sorted[indices_to_remove] = 0
                     sorted /= sorted.sum(dim=-1, keepdim=True)
 
-                    selected = torch.multinomial(sorted, num_samples=1).squeeze()
-                    next_id = indices[torch.arange(indices.size(0)), selected].unsqueeze(1)
+                    selected = torch.multinomial(
+                        sorted, num_samples=1).squeeze()
+                    next_id = indices[torch.arange(
+                        indices.size(0)), selected].unsqueeze(1)
 
                 else:
                     next_id = torch.multinomial(probs, num_samples=1)
@@ -344,5 +368,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained('./gpt2/')
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    pprint(predict(g, tokenizer, prompts, max_new_tokens=10, do_sample=False), width=120)
-    pprint(predict(g, tokenizer, prompts, max_new_tokens=20, do_sample=True, top_p=0.9, top_k=200), width=120)
+    pprint(predict(g, tokenizer, prompts,
+           max_new_tokens=10, do_sample=False), width=120)
+    pprint(predict(g, tokenizer, prompts, max_new_tokens=20,
+           do_sample=True, top_p=0.9, top_k=200), width=120)

@@ -1,3 +1,4 @@
+from typing import Optional
 import torch.nn.functional as F
 from torch import nn
 from einops import rearrange, einsum
@@ -242,15 +243,37 @@ class Llama2ForCausalLM(nn.Module):
         return model
 
     @torch.inference_mode()
-    def generate(self, input_ids: torch.Tensor, do_sample=False, max_new_tokens: int = 100):
+    def generate(self, input_ids: torch.Tensor, do_sample=False, temperature=1.0, top_p: Optional[float] = None,
+                 top_k: Optional[int] = None, max_new_tokens: int = 100):
         input_ids = input_ids[:, -
                               self.config['max_position_embeddings']:]  # (B, S)
         for _ in range(max_new_tokens):
             logits, _ = self(input_ids)  # B, S, V
-            logits = logits[:, -1, :]
+            logits = logits[:, -1, :] / temperature
+            if top_k is not None:
+                assert top_k >= 0, "top_k must be >= 0"
+                top_values, _ = torch.topk(
+                    logits, min(top_k, logits.size(-1)), dim=-1, sorted=True)
+                logits[logits < top_values[..., [-1]]] = float('-inf')
+
             probs = F.softmax(logits, dim=-1)  # B, V
+
             if do_sample:
-                next_id = torch.multinomial(probs, 1)
+                if top_p is not None:
+                    assert 0.0 <= top_p <= 1.0, "top_p must be in (0, 1]"
+                    sorted, indices = torch.sort(probs, dim=-1)
+                    sum = sorted.cumsum(dim=-1)
+                    filter = sum <= (1.0 - top_p)
+                    # keep at least one token in the list
+                    filter[:, -1] = False
+                    sorted[filter] = 0.0
+                    sorted /= sorted.sum(dim=-1, keepdim=True)  # normalization
+
+                    selected = torch.multinomial(sorted, 1)
+                    next_id = indices.gather(dim=-1, index=selected)
+                    # or  next_id = indices[torch.arange(indices.size(0)), selected.squeeze()].unsqueeze(-1)
+                else:
+                    next_id = torch.multinomial(probs, 1)
             else:
                 next_id = torch.argmax(probs, dim=-1, keepdim=True)  # B, 1
             input_ids = torch.concat((input_ids, next_id), dim=1)
@@ -258,10 +281,11 @@ class Llama2ForCausalLM(nn.Module):
         return input_ids
 
 
-def predict(model, tokenizer, prompt, do_sample=False, max_new_tokens=100):
+def predict(model: Llama2ForCausalLM, tokenizer, prompt, do_sample=False, max_new_tokens=100, **kwargs):
+    print(f"{kwargs=}")
     inputs = tokenizer(prompt, padding=True, return_tensors="pt")
     output = model.generate(inputs['input_ids'].to(
-        'cuda'), do_sample=do_sample, max_new_tokens=max_new_tokens)
+        'cuda'), do_sample=do_sample, max_new_tokens=max_new_tokens, **kwargs)
     response = tokenizer.batch_decode(output, skip_special_tokens=True)
     return response
 
@@ -279,24 +303,33 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-m', '--model_path', type=str,
                         default=default_model_path)
+    parser.add_argument('-k', '--top_k', type=int, default=50)
+    parser.add_argument('-p', '--top_p', type=float, default=1.0)
+    parser.add_argument('-s', '--sample', action="store_true", default=False)
+    parser.add_argument('-t', '--temperature', type=float, default=1.0)
+    parser.add_argument('-i', '--interactive',
+                        default=False, action='store_true')
     args = parser.parse_args()
+
+    if args.interactive:
+        pass
 
     model_path = args.model_path
     model = Llama2ForCausalLM.from_pretrained(model_path).to('cuda')
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     tokenizer.pad_token_id = 0
 
+    text = 'I enjoy walking with my cute dog'
     debug = False
     if debug:
         from transformers import AutoModelForCausalLM
         base = AutoModelForCausalLM.from_pretrained(
             model_path, device_map='auto')
-        predict2(base, tokenizer, 'I enjoy walking with my cute dog',
-                 max_new_tokens=50)
+        predict2(base, tokenizer, text, max_new_tokens=50)
         exit
 
-    text = 'I enjoy walking with my cute dog'
-    resp = predict(model, tokenizer, [text], max_new_tokens=50)
+    resp = predict(model, tokenizer, [text], do_sample=args.sample,
+                   max_new_tokens=50, top_k=args.top_k, temperature=args.temperature, top_p=args.top_p)
     print(resp)
 
     truth = 'I enjoy walking with my cute dog, reading, and watching movies.\nI am a very friendly person and I love to help people. I am a very hard worker and I am very dedicated to my work. I am very patient and I am very good at listening to people'

@@ -133,7 +133,7 @@ if [ x"$STREAMING" == xtrue ]; then
       if [ x"$DEBUG" == x1 ]; then
         echo "DEBUG: response: $line"
       else
-        if [ $STYLE == "infini" ]; then 
+        if [ x$STYLE == x"infini" ]; then 
             echo ${line} | jq -j '.choices.[0].delta.content'
         else
           if [ "${line:6}" != "[DONE]" ]; then

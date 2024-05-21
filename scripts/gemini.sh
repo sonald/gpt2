@@ -12,13 +12,13 @@ content=$(cat <<EOF
 EOF
 )
 
-http -j --default-scheme=https \
-    generativelanguage.googleapis.com:/v1beta/models \
-    key=="$API_KEY"
+#http -j --default-scheme=https \
+    #generativelanguage.googleapis.com:/v1beta/models \
+    #key=="$API_KEY"
 
 
 response=$(http -j --default-scheme=https \
-    generativelanguage.googleapis.com:/v1beta/models/gemini-pro:generateContent \
+    generativelanguage.googleapis.com:/v1beta/models/gemini-1.5-pro-latest:generateContent \
     key=="$API_KEY" \
     contents:="$content"
 )

@@ -8,18 +8,16 @@ if [ $? != 0 ] ; then echo "Failed parsing options." >&2 ; exit 1 ; fi
 eval set -- "$OPTS"
 
 print_help() {
-  echo "Usage: $0 [options]"
-  echo "Options:"
-  echo "  -d, --debug             Enable debug mode"
-  echo "  -S                     Enable streaming output"
-  echo "  -e, --endpoint <url>    Set the API endpoint"
-  echo "  -k, --api-key <key>     Set the API key"
-  echo "  -m, --model <model>     Set the model"
-  echo "  -p, --prompt <prompt>   Set the prompt"
-  echo "  -s, --style <style>     Set the style: fireworks(fw), openai, groq, gw, ollama, kimi, infini, ds, dsc"
-  echo "  -h, --help              print this help"
-  echo "  -u, --usage             print token usage"
-  echo "  --                      End of options"
+    echo "Usage: $0 [options] [prompt]"
+    echo "Options:"
+    echo "  -S, --streaming"
+    echo "  -u, --usage"
+    echo "  -h, --help"
+    echo "  -d, --debug"
+    echo "  -e, --endpoint"
+    echo "  -k, --api-key <key>     Set the API key"
+    echo "  -m, --model <model>     Set the model"
+    echo "  -p, --prompt <prompt>   Set the prompt"
 }
 
 STREAMING=false
@@ -54,13 +52,13 @@ if [ x$STYLE != x ]; then
     source scripts/style_config.sh
   fi
 
-  if [ x$STYLE == xollama ]; then
+  if [ x$STYLE == xollam ]; then
     HTTPS_OPTS=
   fi
 
   case "$STYLE" in
-    "ollama" | "infini" | "fireworks"  | "fw" | "openai" | \
-     "groq" | "gw" | "kimi" | "ds" | "dsc" | "ark" )
+    "fake" | "ollama" | "infini" | "fireworks"  | "fw" | "openai" | \
+     "groq" | "cf" | "gateway" | "gw" | "kimi" )
       STYLE_UP=$(echo $STYLE | tr '[:lower:] ' '[:upper:]' )
 
       ENDPOINT_VAR="${STYLE_UP}_ENDPOINT"
@@ -98,10 +96,6 @@ if [ x"$STREAMING" == xtrue ]; then
       else
         if [ x$STYLE == x"infini" ]; then 
             echo ${line} | jq -j '.choices.[0].delta.content'
-        elif [ x$STYLE == x"ark" ]; then 
-          if [ "${line:5}" != "[DONE]" ]; then
-            echo ${line:5} | jq -j '.choices.[0].delta.content'
-          fi
         else
           if [ "${line:6}" != "[DONE]" ]; then
             echo ${line:6} | jq -j '.choices.[0].delta.content'

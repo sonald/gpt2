@@ -1,0 +1,8 @@
+style_config.sh
+.zcache
+.idea
+.DS_Store
+.env
+gpt2
+gpt2-medium
+ark_api_key.json
